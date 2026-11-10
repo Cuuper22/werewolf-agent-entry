@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+devtools/.state/
+.env
+*.tar.gz
+transcripts/
