@@ -77,8 +77,75 @@ ok &= check("else kill the seer claimant", main.wolf_kill(i, [1, 3, 4, 5, 7, 8])
 v["wolfVotes"].append({"night": 2, "seat": 6, "target": 7})
 i = main.Info(1, v)
 ok &= check("follow the partner's pick tonight", main.wolf_kill(i, [1, 3, 4, 5, 7, 8]) == 7)
-ok &= check("exposed wolf counter-claims", main.wolf_counterclaim_target(i) == 3)
-print("   ", main.wolf_speak(i, 1))
+
+
+def wolf_view(speeches, day=1, extra_log=()):
+    v = view(speeches, me=2, role="werewolf")
+    v["you"]["partner"] = {"seat": 6, "name": "Fay", "alive": True}
+    v["day"] = day
+    v["wolfVotes"] = []
+    for i, (seat, text, d) in enumerate([]):
+        pass
+    v["log"].extend(extra_log)
+    return v
+
+
+# fake seer claim, day 1, nobody claimed yet: accuse a living non-partner, parseable, and vote them
+i = main.Info(3, wolf_view([(1, "Morning all, no info yet.")]))
+t1 = main.wolf_speak(i, 1)
+print("   ", t1)
+rec = main.fake_record(i)
+ok &= check("day-1 fake claim names a non-wolf", main.is_seer_claim(t1) and rec[1][1] and rec[1][0] not in (2, 6))
+named = rec[1][0]
+ok &= check("vote the named wolf", main.wolf_vote(i, [1, 3, 4, 5, 6, 7, 8]) == named)
+
+# someone claimed seer before we speak: that claimant is our 'wolf'
+i = main.Info(3, wolf_view([(4, "I am the seer. I checked Eli: not a wolf.")]))
+t2 = main.wolf_speak(i, 1)
+print("   ", t2)
+ok &= check("rival claimant named as the wolf", main.fake_record(i)[1] == (4, True) and "wolf's lie" in t2)
+ok &= check("vote the rival", main.wolf_vote(i, [1, 3, 4, 5, 6, 7, 8]) == 4)
+
+# day 2: our day-1 statement stays; night 2 clears the partner
+v = wolf_view([(2, t1)], day=2, extra_log=[{"seq": 50, "day": 2, "kind": "dawn", "died": None, "role": None}])
+i = main.Info(3, v)
+rec = main.fake_record(i)
+ok &= check("night 1 kept, night 2 clears partner", rec[1] == (named, True) and rec[2] == (6, False))
+t3 = main.wolf_speak(i, 1)
+print("   ", t3)
+
+# a real seer accuses our partner on day 2: hold the claim, push the rival, kill the rival
+v = wolf_view([(2, t1), (5, "I am the seer. I checked Fay (seat 6): werewolf.")], day=2)
+i = main.Info(3, v)
+t4 = main.wolf_speak(i, 1)
+print("   ", t4)
+ok &= check("rival pushed and accused", main.wolf_vote(i, [1, 3, 4, 5, 6, 7, 8]) == 5 and "Eli" in t4)
+ok &= check("kill the rival, never the named wolf", main.wolf_kill(i, [1, 3, 4, 5, 7, 8]) == 5)
+
+# our accused target was exiled: accuse someone new on the next night
+v = wolf_view([(2, t1)], day=2)
+v["players"][named - 1].update(alive=False, role="villager")
+v["log"].append({"seq": 60, "day": 1, "kind": "exile", "seat": named, "role": "villager", "tally": []})
+i = main.Info(3, v)
+rec = main.fake_record(i)
+ok &= check("new accusation after the target is gone", rec[1] == (named, True) and rec[2][1] and rec[2][0] not in (2, 6, named))
+
+# real seer: claims in the first statement whatever the result; votes found wolf; calls rival a werewolf
+v = view([], me=1, role="seer")
+v["seerResults"] = [{"night": 1, "seat": 5, "werewolf": False}]
+i = main.Info(4, v)
+t5 = main.village_speak(i, 1)
+print("   ", t5)
+ok &= check("seer claims day 1 with a clear", main.is_seer_claim(t5) and "Eli (seat 5): not a wolf" in t5)
+ok &= check("seer steers away from cleared", main.seer_vote(i, [2, 3, 4, 5, 6, 7, 8]) != 5)
+v = view([(3, "I am the seer. Ana is a werewolf.")], me=1, role="seer")
+v["seerResults"] = [{"night": 1, "seat": 7, "werewolf": True}]
+i = main.Info(4, v)
+t6 = main.village_speak(i, 1)
+print("   ", t6)
+ok &= check("seer votes found wolf over rival", main.seer_vote(i, [2, 3, 4, 5, 6, 7, 8]) == 7 and "lying" in t6)
+v["seerResults"] = [{"night": 1, "seat": 7, "werewolf": False}]
+ok &= check("seer votes the rival claimant", main.seer_vote(main.Info(4, v), [2, 3, 4, 5, 6, 7, 8]) == 3)
 
 # doctor: I saved seer claimant Cleo on night 1 while Dov also claims seer
 v = view([(3, "I am the seer. I checked Dov: werewolf."), (4, "I'm the real seer. Cleo (seat 3) is a wolf.")], me=8, role="doctor")

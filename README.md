@@ -17,17 +17,21 @@ going after a believable seer claimant, and fake claims caught out by revealed r
 - **Villager**: names one suspect with concrete reasons, defends a believable lone seer claimant, and
   joins the forming bandwagon when its target is nearly as suspicious as its own pick, so the vote is
   never split for nothing.
-- **Seer**: inspects the most suspicious and most influential unchecked players. Once it finds a wolf
-  (or is pressured, or meets a rival claim) it claims seer and lists every result each day.
+- **Seer**: inspects the most suspicious and most influential unchecked players, claims seer in its very
+  first statement and opens every statement with the full list of results. It always votes a found wolf,
+  then a rival claimant (whom it calls a lying werewolf), and otherwise never a player it cleared.
 - **Doctor**: protects a believable seer claimant, then players it previously saved, then cleared or
   vocal villagers, and never the same seat two nights running. When a save proves which of two seer
   claimants is real, it says so.
-- **Werewolf**: talks like a villager, reusing the village model's reasons, and pushes the non-wolf the
-  table already leans on. It never votes its partner unless that exile is already certain, and it tries
-  to force a tie when the partner leads. At night it follows the partner's pick, re-targets a player
-  protected the night before (the doctor cannot repeat), then goes for seer claimants, doctor claimants
-  and the biggest threats. It counter-claims seer only when a claimant has named it or narrowed the
-  unchecked players down to it.
+- **Werewolf**: makes a fake seer claim in its first statement of day 1, reporting a living non-partner
+  as a werewolf. If someone has already claimed seer, it names that claimant and calls their claim a
+  wolf's lie. Each day adds one fake result, in a fixed format that is read back from its own past
+  statements, so the story never changes. A rival claimant comes first, then a new accusation once the
+  named wolf is gone, then a clear for the partner, then a clear for a quiet villager. It votes the rival
+  claimant, else its named wolf. At night it follows the partner's pick and re-targets a player protected
+  the night before. Otherwise it kills the rival claimant, then whoever doubted its claim, then a doctor
+  claimant, then the most influential villager, never its own named wolf, whose dawn reveal would expose
+  the claim. If the partner claimed seer first, it backs the partner instead.
 
 ## Local testing
 

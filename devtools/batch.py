@@ -31,9 +31,15 @@ def main():
     a = ap.parse_args()
     jobs = [(t, f"s{k}", a.base + 10 * (3 * k + t)) for k in range(a.seeds) for t in range(3)]
     res = []
+    roles = {r: [0, 0] for r in ("werewolf", "seer", "doctor", "villager")}
+    issues = digests = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         for trial, seed, sc, iss, out in ex.map(one, jobs):
             print(f"trial {trial} seed {seed}: {sc} issues {iss}")
+            issues += max(iss, 0)
+            for r, w, n in re.findall(r"'(\w+)': '(\d+)/(\d+)'", out):
+                roles[r][0] += int(w)
+                roles[r][1] += int(n)
             if sc is None:
                 print(out[-2000:])
             else:
@@ -41,6 +47,8 @@ def main():
     if res:
         n = len(res)
         print(f"MEAN over {n}: score {sum(r[0] for r in res) / n:.1f}  wolf {sum(r[1] for r in res) / n:.3f}  village {sum(r[2] for r in res) / n:.3f}")
+        print("per role (per mille): " + ", ".join(f"{r} {1000 * w / max(1, g):.0f} ({w}/{g})" for r, (w, g) in roles.items())
+              + f"; refused/errored actions: {issues}")
 
 
 if __name__ == "__main__":

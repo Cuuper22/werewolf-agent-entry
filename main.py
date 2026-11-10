@@ -596,15 +596,22 @@ def seer_known_wolves(info):
 
 
 def seer_should_claim(info):
-    if info.i_claimed_seer():
-        return True
-    if any(s in info.alive for s in seer_known_wolves(info)):
-        return True
-    if any(c != info.me and c in info.alive for c in info.seer_claims):
-        return True
-    if info.pressure_on_me() >= 2:
-        return True
-    return info.day >= 3 and len(info.seer_results) >= 2
+    """The seer claims in its very first statement and keeps claiming."""
+    return True
+
+
+def seer_vote(info, options):
+    """A found wolf first, then a rival seer claimant, else the village pick among the uncleared."""
+    for s, (w, _n) in sorted(info.seer_results.items(), key=lambda kv: -kv[1][1]):
+        if w and s in options:
+            return s
+    for c in info.seer_claims:
+        if c != info.me and c in options:
+            return c
+    cleared = {s for s, (w, _n) in info.seer_results.items() if not w}
+    pool = [o for o in options if o not in cleared] or list(options)
+    t, _S, _R = village_target(info, pool, True)
+    return t
 
 
 def seer_claim_text(info, rnd):
@@ -620,10 +627,10 @@ def seer_claim_text(info, rnd):
     fakes = [c for c in info.seer_claims if c != info.me and c in info.alive]
     extra = ""
     if fakes:
-        extra = " " + " ".join(f"{info.nm(f)} is lying about being the seer, so they are a wolf." for f in fakes)
+        extra = " " + " ".join(f"{info.nm(f)} is lying about being the seer, and that makes them a werewolf." for f in fakes)
     live_wolves = [s for s in seer_known_wolves(info) if s in info.alive]
     if live_wolves:
-        w = live_wolves[0]
+        w = seer_vote(info, live_wolves)
         act = choose([f"Everyone vote {info.nm(w)} today.", f"Vote {info.short(w)} out - that is a confirmed wolf.",
                       f"Our vote today is {info.nm(w)}, all of us together."], *key, "a")
     elif fakes:
@@ -637,7 +644,7 @@ def seer_claim_text(info, rnd):
         if unk:
             act += "; the wolves are among " + ", ".join(info.short(s) for s in unk)
         act += "."
-        t = village_vote(info, [s for s in info.alive if s != info.me])
+        t = seer_vote(info, [s for s in info.alive if s != info.me])
         if t is not None:
             act += f" My vote is {info.nm(t)}."
     return f"{head} {body}{extra} {act}"
@@ -726,31 +733,156 @@ def wolf_threat(info, s):
     return t
 
 
-def wolf_counterclaim_target(info):
-    """The seer claimant to counter-claim against, or None.
+def partner_claimed_seer(info):
+    return info.partner is not None and info.partner in info.seer_claims and info.partner in info.alive
 
-    Once I have claimed, it is the one I named a wolf (so the story stays the same every day).
-    Otherwise a live claimant who named me a wolf, or whose clears leave me one of the last two
-    unchecked players: the village is about to find me, so a counter-claim is the only play left.
-    """
-    if info.i_claimed_seer():
-        for s, w in info.claimed.get(info.me, {}).items():
-            if w and s not in info.wolves:
-                return s
-    for c in info.seer_claims:
-        if c in info.wolves or c == info.me or c not in info.alive:
+
+# -- the fake seer claim
+#
+# A wolf claims seer in its first statement of day 1 and reports one result a night, always in the
+# fixed form "night N, Name (seat S): WEREWOLF|villager". Results already said are read back from our
+# own statements in the public log and never changed; only a night not yet reported gets a new result,
+# picked deterministically from the view. So every statement, vote and kill tells the same story.
+
+RX_FAKE_RESULT = re.compile(r"night (\d+), [^;:()]*\(seat ([1-8])\): (WEREWOLF|villager)")
+
+
+def wolf_claiming(info):
+    """Whether we run the fake seer claim: always, unless our partner claimed seer before we did."""
+    if info.role != "werewolf":
+        return False
+    p = info.partner
+    if p is not None and p in info.seer_claims:
+        mine = info.seer_claim_idx.get(info.me)
+        if mine is None or info.seer_claim_idx[p] < mine:
+            return False
+    return True
+
+
+def wolf_rivals(info):
+    """Live seer claimants who are not wolves, in order of claim."""
+    return [c for c in info.seer_claims if c not in info.wolves and c != info.me and c in info.alive]
+
+
+def wolf_doubters(info):
+    """seat -> how hard they pushed or voted on me since my seer claim."""
+    start = info.seer_claim_idx.get(info.me)
+    if start is None:
+        return {}
+    out = {}
+    for ev in info.events:
+        if ev.target == info.me and ev.w > 0 and ev.idx > start and ev.speaker not in info.wolves:
+            out[ev.speaker] = out.get(ev.speaker, 0.0) + ev.w
+    first_day = info.seer_claim_day.get(info.me, info.day)
+    for d, vs in info.votes.items():
+        if d >= first_day:
+            for v, t in vs:
+                if t == info.me and v not in info.wolves:
+                    out[v] = out.get(v, 0.0) + 1.5
+    return out
+
+
+def fake_record(info):
+    """night -> (seat, is_wolf): what we said, then a fresh result for each night not yet reported."""
+    rec = {}
+    for (_d, _r, s, text, _i) in info.speeches:
+        if s != info.me:
             continue
-        cl = info.claimed.get(c, {})
-        if cl.get(info.me):
-            return c
-        unchecked = [s for s in info.alive if s != c and s not in cl]
-        if info.me in unchecked and len(unchecked) <= 2 and len(cl) >= 2:
-            return c
+        for m in RX_FAKE_RESULT.finditer(text):
+            n, seat = int(m.group(1)), int(m.group(2))
+            if n not in rec and seat in info.names:
+                rec[n] = (seat, m.group(3) == "WEREWOLF")
+    for n in range(1, max(1, info.day) + 1):
+        if n not in rec:
+            pick = new_fake_result(info, rec, n)
+            if pick is not None:
+                rec[n] = pick
+    return rec
+
+
+def new_fake_result(info, rec, n):
+    reported = {s for s, _w in rec.values()}
+    named_alive = [s for s, w in rec.values() if w and s in info.alive]
+    claimed_role = set(info.seer_claims) | set(info.doc_claims)
+    # 1. a rival seer claimant we have not yet called a wolf: "I checked them, and they are one"
+    for c in wolf_rivals(info):
+        if not any(s == c and w for s, w in rec.values()):
+            return (c, True)
+    # 2. our accused wolf is gone (or none yet): accuse a new living non-partner
+    if not named_alive:
+        pool = [s for s in info.alive if s not in info.wolves and s != info.me and s not in reported]
+        if pool:
+            unclaimed = [s for s in pool if s not in claimed_role] or pool
+            mom = info.momentum()
+            return (max(unclaimed, key=lambda s: (1.0 * wolf_threat(info, s) + 0.5 * mom.get(s, 0.0)
+                                                  + (h(info.game, "fakewolf", n, s) % 1000) / 1000.0)), True)
+    # 3. clear our partner early, then a quiet villager (a clear lends little weight to the quiet)
+    p = info.partner
+    if p is not None and p in info.alive and p not in reported:
+        return (p, False)
+    pool = [s for s in info.alive if s not in info.wolves and s != info.me and s not in reported
+            and s not in info.seer_claims]
+    if pool:
+        return (max(pool, key=lambda s: -wolf_threat(info, s) - 0.3 * info.influence(s)
+                    + (h(info.game, "fakeclear", n, s) % 1000) / 1000.0), False)
     return None
 
 
-def partner_claimed_seer(info):
-    return info.partner is not None and info.partner in info.seer_claims and info.partner in info.alive
+def fake_vote_target(info, options):
+    """Our claim's vote: the rival claimant first, then a living player we called a wolf."""
+    for c in wolf_rivals(info):
+        if c in options:
+            return c
+    rec = fake_record(info)
+    for n in sorted(rec, reverse=True):
+        s, w = rec[n]
+        if w and s in options and s not in info.wolves:
+            return s
+    return None
+
+
+def fake_seer_text(info, rnd):
+    key = (info.game, info.day, rnd, info.me)
+    rec = fake_record(info)
+    first = not info.i_claimed_seer()
+    results = "; ".join(f"night {n}, {info.nm(s)}: {'WEREWOLF' if w else 'villager'}" for n, (s, w) in sorted(rec.items()))
+    rivals = wolf_rivals(info)
+    target = fake_vote_target(info, [s for s in info.alive if s != info.me])
+    parts = []
+    if first and rivals:
+        R = info.short(rivals[0])
+        parts.append(choose([f"I am the seer, and {R}'s seer claim is a wolf's lie.",
+                             f"I'm the real seer, and {R}'s claim is a wolf's lie - I checked {R}."], *key, "f1"))
+    elif first:
+        parts.append(choose(["I am the seer.", "I'm the seer, and I'm claiming it right away.",
+                             "Seer claim: I am the seer."], *key, "f1"))
+    elif rnd == 2:
+        parts.append(choose(["Again, as the seer:", "Repeating my seer results so nobody loses track."], *key, "f2"))
+    else:
+        parts.append(choose(["I am the seer.", "Still the seer, with one more result.", "Seer here, new result in."], *key, "f3"))
+    parts.append(f"My checks - {results}." if len(rec) > 1 else f"My check - {results}.")
+    if rivals:
+        R = info.short(rivals[0])
+        after = info.seer_claim_idx.get(rivals[0], -1) > info.seer_claim_idx.get(info.me, 10 ** 9)
+        lines = [f"Two seer claims means one of us is a wolf, and I checked {R}: werewolf.",
+                 f"There can only be one seer. {R} is a wolf posing as the seer to protect their partner."]
+        if after:
+            lines.append(f"{R} claiming seer only after I did is exactly what a caught wolf does.")
+        parts.append(choose(lines, *key, "rv"))
+        hit = [s for s in (info.me, info.partner)
+               if s is not None and s in info.alive and info.claimed.get(rivals[0], {}).get(s)]
+        if hit and hit[0] != info.me:
+            if any(s == hit[0] and not w for s, w in rec.values()):
+                parts.append(f"I checked {info.short(hit[0])} myself: villager. {R} is attacking a cleared player.")
+            else:
+                parts.append(f"{R} is going after {info.short(hit[0])} to cover for their own team.")
+    cleared = [s for s, w in rec.values() if not w and s in info.alive]
+    if cleared and not rivals:
+        parts.append("I've cleared " + ", ".join(info.short(s) for s in cleared) + ", so leave them alone.")
+    if target is not None:
+        parts.append(choose([f"Vote {info.nm(target)} today, all of us together.", f"Our vote today is {info.nm(target)}.",
+                             f"Everyone, put your vote on {info.nm(target)}."], *key, "fv"))
+    return " ".join(parts)
 
 
 def wolf_target(info, options):
@@ -758,9 +890,10 @@ def wolf_target(info, options):
     cand = [o for o in options if o not in info.wolves]
     if not cand:
         return None
-    cc = wolf_counterclaim_target(info)
-    if (info.i_claimed_seer() or cc) and cc in cand:
-        return cc
+    if wolf_claiming(info):
+        t = fake_vote_target(info, cand)
+        if t is not None:
+            return t
     if partner_claimed_seer(info):
         rivals = [c for c in info.seer_claims if c not in info.wolves and c in cand]
         if rivals:
@@ -779,6 +912,8 @@ def wolf_vote(info, options):
     cand = [o for o in options if o not in info.wolves]
     if not cand:
         return options[0] if options else None
+    if wolf_claiming(info):
+        return wolf_target(info, options)  # the claim's target; never bus the partner we cleared
     tally = info.tally()
     p = info.partner
     if p is not None and p in info.alive and p in options:
@@ -794,31 +929,11 @@ def wolf_vote(info, options):
     return wolf_target(info, options)
 
 
-def wolf_fake_results(info, cc):
-    """A stable fake seer record: the rival claimant is a wolf on the night before my first claim
-    (so I claimed as soon as I "found" them), and every other night clears a villager."""
-    first = info.seer_claim_day.get(info.me, info.day)
-    pool = sorted((s for s in info.names if s not in info.wolves and s != cc and s != info.me
-                   and s not in info.seer_claims), key=lambda s: h(info.game, "fake", s))
-    out = []
-    for n in range(1, info.day + 1):
-        if n == first:
-            out.append((n, cc, True))
-        elif pool:
-            out.append((n, pool.pop(0), False))
-    return out
-
-
 def wolf_speak(info, rnd):
     key = (info.game, info.day, rnd, info.me)
     others = [s for s in info.alive if s != info.me]
-    cc = wolf_counterclaim_target(info)
-    if cc is not None and (info.i_claimed_seer() or cc in info.alive):
-        res = wolf_fake_results(info, cc)
-        txt = "; ".join(f"night {n}, {info.nm(s)}: {'WEREWOLF' if w else 'not a wolf'}" for n, s, w in res)
-        head = choose(["I am the real seer.", "I'm the seer, and that claim is false.", "I have to claim: I am the seer."], *key, "cc")
-        return (f"{head} My checks - {txt}. {info.short(cc)} is a wolf who claimed seer to get a villager killed. "
-                f"Vote {info.nm(cc)} today.") if cc in info.alive else f"{head} My checks - {txt}."
+    if wolf_claiming(info):
+        return fake_seer_text(info, rnd)
     t = wolf_target(info, others)
     if t is None:
         return choose(["Let's vote together and finish this.", "I'm with the group on this one."], *key, "x")
@@ -855,7 +970,9 @@ def wolf_kill(info, options):
     dn = info.night_deaths.get(night - 1)
     if prev and len(set(prev)) == 1 and dn is not None and dn[0] is None and prev[0] in opts:
         return prev[0]  # protected last night, so the doctor cannot protect them again tonight
-    protect_rival = (info.i_claimed_seer() or partner_claimed_seer(info))
+    if wolf_claiming(info):
+        return fake_claim_kill(info, opts)
+    protect_rival = partner_claimed_seer(info)
     S, _R, cred = info.scores({info.me: False})
     seers = [c for c in info.seer_claims if c in opts and not protect_rival]
     if seers:
@@ -869,6 +986,26 @@ def wolf_kill(info, options):
             v -= 50
         return v + (h(info.game, "kill", night, c) % 1000) / 1000.0
     return max(opts, key=value)
+
+
+def fake_claim_kill(info, opts):
+    """While we claim seer: the rival claimant, then whoever doubted our claim, then the doctor
+    claimant, then the most influential villager. Never the player we called a wolf: their real role
+    would be revealed at dawn and expose the claim, so they must go by vote."""
+    for c in wolf_rivals(info):
+        if c in opts:
+            return c
+    named = {s for s, w in fake_record(info).values() if w}
+    pool = [o for o in opts if o not in named] or list(opts)
+    doubt = wolf_doubters(info)
+    doubters = [s for s in pool if doubt.get(s, 0) > 0]
+    if doubters:
+        return max(doubters, key=lambda s: (doubt[s], (h(info.game, "doubt", info.day, s) % 1000)))
+    for c in info.doc_claims:
+        if c in pool:
+            return c
+    return max(pool, key=lambda s: info.influence(s) + 0.5 * wolf_threat(info, s)
+               + (h(info.game, "infl", info.day, s) % 1000) / 1000.0)
 
 
 # ---------------------------------------------------------------- dispatch
@@ -898,7 +1035,12 @@ def decide(p):
     if not options:
         return {"target": None}
     if kind == "vote":
-        t = wolf_vote(info, options) if info.role == "werewolf" else village_vote(info, options)
+        if info.role == "werewolf":
+            t = wolf_vote(info, options)
+        elif info.role == "seer":
+            t = seer_vote(info, options)
+        else:
+            t = village_vote(info, options)
     elif kind == "kill":
         t = wolf_kill(info, options)
     elif kind == "protect":
